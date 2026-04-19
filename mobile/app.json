@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Smart Financial Coach",
+    "slug": "smart-financial-coach",
+    "version": "1.0.0",
+    "description": "Manage your expenses and budget with ease",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "sfcoach",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.smartfinancialcoach.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#2196F3",
+        "foregroundImage": "./assets/images/android-icon-foreground.png"
+      },
+      "package": "com.smartfinancialcoach.app"
+    },
+    "web": {
+      "output": "single"
+    },
+    "permissions": [
+      "android.permission.INTERNET",
+      "android.permission.READ_SMS",
+      "ios.permission.INTERNET"
+    ]
+  }
+}

@@ -1,0 +1,424 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Model
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  password  String     // Hashed password
+  name      String
+  baseCurrency String  @default("INR")
+  tokenVersion Int    @default(0)  // For token revocation on logout
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Relations
+  expenses  Expense[]
+  budgets   Budget[]
+  wallets   Wallet[]
+  investments Investment[]
+  notifications Notification[]
+  subscription UserSubscription?
+  alertConfiguration AlertConfiguration?
+  smartAlerts SmartAlert[]
+  insightLogs InsightLog[]
+  incomeProfile IncomeProfile?
+  devicePushTokens DevicePushToken[]
+
+  @@map("users")
+  @@index([email])
+}
+
+model Wallet {
+  id        String     @id @default(cuid())
+  userId    String
+  name      String
+  type      String
+  balance   Float      @default(0)
+  currency  String     @default("INR")
+  isDefault Boolean    @default(false)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expenses  Expense[]
+
+  @@map("wallets")
+  @@index([userId])
+}
+
+// Expense Model
+model Expense {
+  id              String   @id @default(cuid())
+  userId          String
+  walletId        String?
+  amount          Float
+  currency        String   @default("INR")
+  category        String
+  description     String?
+  date            DateTime @default(now())
+  
+  // CRITICAL FIX P1: Idempotency key for duplicate prevention
+  idempotencyKey  String?  @unique // Optional - prevents duplicate creation on network retry
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet          Wallet?  @relation(fields: [walletId], references: [id], onDelete: SetNull)
+
+  @@map("expenses")
+  @@unique([idempotencyKey]) // Prevent duplicates
+  @@index([userId])
+  @@index([date])
+  @@index([userId, date]) // Composite index for month queries
+}
+
+// Budget Model
+model Budget {
+  id        String   @id @default(cuid())
+  userId    String
+  month     Int      // 1-12
+  year      Int      // 2024, 2025, etc
+  amount    Float    // Monthly budget limit
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, month, year]) // One budget per user per month
+  @@map("budgets")
+  @@index([userId])
+}
+// Investment Model
+model Investment {
+  id            String    @id @default(cuid())
+  userId        String
+  assetName     String    // "Apple Stock", "Bitcoin", etc
+  assetSymbol   String?   // "AAPL", "BTC", etc
+  type          String    // "stock", "crypto", "mutual_fund", "commodity"
+  quantity      Float
+  buyPrice      Float     // Price at purchase
+  currentPrice  Float     // Updated price
+  totalBuyValue Float     // quantity * buyPrice
+  totalCurrentValue Float // quantity * currentPrice
+  profitLoss    Float     // totalCurrentValue - totalBuyValue
+  profitLossPercent Float
+  currency      String    @default("INR")
+  purchaseDate  DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("investments")
+  @@index([userId])
+  @@index([type])
+}
+
+// Notification Model
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      String    // "budget", "investment", "health_score", "subscription"
+  read      Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// User Subscription Model (Premium Features) - PRODUCTION PAYMENT SYSTEM
+model UserSubscription {
+  userId              String        @id
+  plan                String        @default("free") // "free" | "pro_monthly" | "pro_yearly"
+  tier                String        @default("free") // "free" | "premium" | "pro"
+  status              String        @default("active") // "active" | "cancelled" | "expired" | "trialing"
+  
+  // Billing Details
+  startDate           DateTime      @default(now())
+  expiresAt           DateTime?
+  renewalDate         DateTime?
+  gracePeriodEndDate  DateTime?     // Grace period for failed payments
+  
+  // Trial Information
+  trialEndsAt         DateTime?
+  trialUsed           Boolean       @default(false)
+  
+  // Payment Information
+  lastPaymentId       String?       // Latest payment ID
+  lastPaymentStatus   String?       // "success" | "failed" | "pending"
+  lastPaymentDate     DateTime?
+  nextPaymentDate     DateTime?
+  
+  // Subscription Details
+  autoRenew           Boolean       @default(true)
+  paymentProvider     String?       // "razorpay" | "stripe"
+  paymentMethodId     String?       // Payment method reference
+  
+  // Pricing Snapshot
+  priceInr            Int?          // Price paid in INR
+  currency            String        @default("INR")
+  
+  // Relations
+  isActive            Boolean       @default(true)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentTransactions PaymentTransaction[]
+  
+  @@map("user_subscriptions")
+  @@index([status])
+  @@index([expiresAt])
+  @@index([renewalDate])
+}
+
+// Payment Transaction Model
+model PaymentTransaction {
+  id                  String        @id @default(cuid())
+  userId              String
+  subscriptionId      String?
+  userSubscriptionId  String?
+  
+  // CRITICAL FIX P0: Idempotency key prevents double charges
+  idempotencyKey      String        @unique // UNIQUE constraint - prevents duplicates
+  
+  // Order Details
+  orderId             String?       // Razorpay/Stripe order ID
+  paymentId           String?       // Razorpay/Stripe payment ID
+  signature           String?       // For signature verification
+  
+  // Transaction Details
+  amount              Int           // Amount in paise/cents (smallest unit)
+  currency            String        @default("INR")
+  status              String        // "created" | "authorized" | "captured" | "failed" | "refunded"
+  description         String?
+  
+  // Plan Information
+  plan                String?       // "pro_monthly" | "pro_yearly"
+  planName            String?
+  planDurationMonths  Int?
+  
+  // Provider Details
+  provider            String?       // "razorpay" | "stripe"
+  providerOrderId     String?
+  providerPaymentId   String?
+  
+  // Error Handling
+  failureReason       String?
+  errorCode           String?
+  
+  // Metadata
+  metadata            String?       // JSON string for additional data
+  receipt             String?       // Receipt ID
+  
+  // Timestamps
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  
+  // Relations
+  userSubscription    UserSubscription? @relation(fields: [userSubscriptionId], references: [userId], onDelete: Cascade)
+  
+  @@map("payment_transactions")
+  @@unique([idempotencyKey]) // CRITICAL: Prevents duplicate processing
+  @@index([userId])
+  @@index([status])
+  @@index([orderId])
+  @@index([paymentId])
+  @@index([idempotencyKey]) // Index for fast lookup
+  @@index([createdAt])
+}
+
+model SubscriptionEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  eventType String   // "upgrade" | "cancel" | "expire" | "trial_start"
+  fromTier  String?
+  toTier    String?
+  amountInr Int?
+  createdAt DateTime @default(now())
+
+  @@map("subscription_events")
+  @@index([userId])
+  @@index([createdAt])
+  @@index([eventType])
+}
+
+model ReferralCode {
+  id         String   @id @default(cuid())
+  inviterUserId String
+  code       String   @unique
+  createdAt  DateTime @default(now())
+
+  @@map("referral_codes")
+  @@index([inviterUserId])
+}
+
+model ReferralRedemption {
+  id          String   @id @default(cuid())
+  code        String
+  inviterUserId String
+  inviteeUserId String
+  rewardedUntil DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("referral_redemptions")
+  @@unique([code, inviteeUserId])
+  @@index([inviterUserId])
+  @@index([inviteeUserId])
+  @@index([createdAt])
+}
+
+model AnalyticsEventLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  event     String
+  properties Json?
+  createdAt DateTime @default(now())
+
+  @@map("analytics_event_logs")
+  @@index([userId])
+  @@index([event])
+  @@index([createdAt])
+}
+
+// Net Worth Snapshot — one row per user per day for the 30-day trend chart
+model NetWorthSnapshot {
+  id              String   @id @default(uuid())
+  userId          String
+  total           Float    // wallets + investments
+  walletTotal     Float    @default(0)
+  investmentTotal Float    @default(0)
+  createdAt       DateTime @default(now())
+
+  @@map("net_worth_snapshots")
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Alert Configuration - user's alert preferences
+model AlertConfiguration {
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  budgetThresholdPercent  Int       @default(80)    // Alert at 80% of budget
+  unusualSpendingEnabled  Boolean   @default(true)
+  subscriptionRemindersEnabled Boolean @default(true)
+  dailyDigestEnabled      Boolean   @default(false)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("alert_configurations")
+}
+
+// Smart Alerts - generated alerts for the user
+model SmartAlert {
+  id          String   @id @default(cuid())
+  userId      String
+  alertType   String   // "budget_threshold", "unusual_spending", "subscription_reminder", "health_score"
+  title       String
+  message     String
+  severity    String   @default("info")  // "info", "warning", "critical"
+  dismissed   Boolean  @default(false)
+  actionUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("smart_alerts")
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Insights Log - for tracking historical insights
+model InsightLog {
+  id        String   @id @default(cuid())
+  userId    String
+  insight   String   // JSON string of insight
+  category  String   // "spending", "savings", "investment", "subscription"
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("insight_logs")
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Income Profile — real user-provided monthly income (no estimation/mock)
+model IncomeProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  monthlyIncome Float
+  currency      String   @default("INR")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("income_profiles")
+  @@index([userId])
+}
+
+model UserGoal {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  savingsGoalInr Float
+  targetDate    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("user_goals")
+  @@index([userId])
+}
+
+model UserHabitsProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  spendingStyle   String   // "planner" | "balanced" | "impulsive"
+  riskTolerance   String   // "low" | "medium" | "high"
+  wantsDailyDigest Boolean @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("user_habits_profiles")
+  @@index([userId])
+}
+
+// Device push tokens (Expo) for server-triggered push notifications
+model DevicePushToken {
+  id            String   @id @default(cuid())
+  userId        String
+  expoPushToken String   @unique
+  platform      String   // "ios" | "android" | "web" | "unknown"
+  enabled       Boolean  @default(true)
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("device_push_tokens")
+  @@index([userId])
+  @@index([enabled])
+  @@index([lastSeenAt])
+}
